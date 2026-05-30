@@ -7,201 +7,220 @@ import { fetchFile } from "@ffmpeg/util";
 export default function Home() {
   // --- STATE MANAGEMENT ---
   const [ready, setReady] = useState(false);
-  const [status, setStatus] = useState("Preparing engine...");
+  const [status, setStatus] = useState("Initializing system...");
   const [progress, setProgress] = useState(0); 
   const [compiling, setCompiling] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [aspectRatio, setAspectRatio] = useState("16:9");
   
-  // RESTORED: Duration controls
-  const [imgDuration, setImgDuration] = useState<number>(3); // Seconds per photo
-  const [endSeconds, setEndSeconds] = useState<number>(15);   // Max video end time cut-off
+  // Custom Controls
+  const [aspectRatio, setAspectRatio] = useState("16:9");
+  const [duration, setDuration] = useState("0.6"); // Defaulting straight to your target 0.6s
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  
+  const ffmpegRef = useRef(new FFmpeg());
 
-  const ffmpegRef = useRef<FFmpeg | null>(null);
-
-  // --- 1. AUTO-INITIALIZE ENGINE ---
+  // --- 1. SILENT BACKGROUND ENGINE INITIALIZATION ---
   useEffect(() => {
     const loadFFmpeg = async () => {
-      const ffmpegInstance = new FFmpeg();
-      ffmpegRef.current = ffmpegInstance;
+      const ffmpeg = ffmpegRef.current;
 
-      ffmpegInstance.on("progress", ({ progress }) => {
+      // Track compilation progress accurately from 0 to 100
+      ffmpeg.on("progress", ({ progress }) => {
         setProgress(Math.round(progress * 100));
       });
 
       try {
-        setStatus("Downloading video engine (30MB)...");
-        await ffmpegInstance.load({
+        await ffmpeg.load({
           coreURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
           wasmURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
         });
         setReady(true);
-        setStatus("Engine Ready!");
-        setProgress(0); 
+        setStatus("Engine Ready");
       } catch (error) {
         console.error("FFmpeg load failed:", error);
-        setStatus("Failed to load video engine.");
+        setStatus("Initialization failed.");
       }
     };
 
     loadFFmpeg();
   }, []);
 
-  // --- 2. COMPILE VIDEO FUNCTION ---
-  const compileVideo = async (files: FileList) => {
-    if (!files || files.length === 0 || !ffmpegRef.current) return;
+  // --- 2. ADVANCED VIDEO COMPILE PIPELINE ---
+  const handleGenerateVideo = async () => {
+    if (!selectedFiles || selectedFiles.length === 0) return;
     
     setCompiling(true);
     setProgress(0);
-    setStatus("Compiling your video...");
+    setStatus("Processing frames...");
     const ffmpeg = ffmpegRef.current;
 
     try {
-      // Write images to virtual memory space
-      for (let i = 0; i < files.length; i++) {
-        const fileData = await fetchFile(files[i]);
+      // Write images cleanly to workspace memory virtual disk
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const fileData = await fetchFile(selectedFiles[i]);
         const fileName = `img${String(i + 1).padStart(3, "0")}.jpg`;
         await ffmpeg.writeFile(fileName, fileData);
       }
 
-      // Aspect Ratio Matrix settings mapping
-      let scale = "1920:1080"; 
-      if (aspectRatio === "9:16") scale = "1080:1920";
-      if (aspectRatio === "1:1") scale = "1080:1080";
-      if (aspectRatio === "4:3") scale = "1440:1080";
-      if (aspectRatio === "3:4") scale = "1080:1440";
+      // Convert duration text directly to input frame rate target (FR = 1 / duration)
+      const frameRate = (1 / parseFloat(duration)).toFixed(2);
 
-      // Calculate the input framerate based on your user duration choice
-      // If a photo lasts 3 seconds, framerate needs to be 1/3
-      const inputFramerate = (1 / imgDuration).toString();
+      // Define clear aspect matrices matching your resolution targets
+      let targetW = 1920;
+      let targetH = 1080;
+      if (aspectRatio === "9:16") { targetW = 1080; targetH = 1920; }
+      if (aspectRatio === "1:1")  { targetW = 1080; targetH = 1080; }
+      if (aspectRatio === "4:3")  { targetW = 1440; targetH = 1080; }
+      if (aspectRatio === "3:4")  { targetW = 1080; targetH = 1440; }
 
-      // Execute scaling, padding, custom durations, and aspect ratio hardcoding
+      // FFmpeg dynamic smart-crop script: Scales to cover the screen fully, then center-crops
+      const filterString = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih),crop=${targetW}:${targetH}`;
+
       await ffmpeg.exec([
-        "-framerate", inputFramerate, 
+        "-framerate", frameRate,
         "-i", "img%03d.jpg",
-        "-vf", `scale=${scale}:force_original_aspect_ratio=decrease,pad=${scale}:(ow-iw)/2:(oh-ih)/2`,
+        "-vf", filterString,
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
-        "-aspect", aspectRatio,          // FIXED: Forces media players to render 3:4 natively instead of falling back to 4:3
-        "-t", endSeconds.toString(),      // RESTORED: Hard cut-off end time for your video output
         "output.mp4"
       ]);
 
-      // Read final video output (With explicit type assertion to satisfy Vercel compilation checks)
+      // Read final video output (WITH THE TYPESCRIPT FIX)
       const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data as any], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       
       setVideoUrl(url);
-      setStatus("Video complete!");
+      setStatus("Generation Complete!");
     } catch (error) {
-      console.error("Compilation error:", error);
-      setStatus("Error compiling video.");
+      console.error(error);
+      setStatus("Compilation Error.");
     } finally {
       setCompiling(false);
     }
   };
 
-  // --- 3. UI RENDER ---
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-black text-white">
-      <div className="w-full max-w-md p-6 bg-zinc-900 rounded-xl shadow-lg flex flex-col gap-6">
-        <h1 className="text-2xl font-bold text-center text-emerald-400">Photopiler</h1>
+    <main className="flex min-h-screen flex-col items-center justify-center p-4 bg-black text-white font-sans antialiased">
+      {/* Container holding your classic professional layout design */}
+      <div className="w-full max-w-md bg-[#111] rounded-2xl border border-zinc-850 shadow-2xl overflow-hidden relative">
+        
+        {/* The Classic Blue/Green Top Accent Line Styling */}
+        <div className="h-[3px] w-full bg-gradient-to-r from-cyan-500 via-emerald-500 to-emerald-400" />
 
-        {/* PROGRESS BAR & STATUS METRICS */}
-        <div className="flex flex-col gap-2">
-          <p className="text-sm text-gray-400 text-center">{status}</p>
-          {(!ready || compiling) && (
-            <div className="w-full bg-zinc-700 rounded-full h-3 overflow-hidden">
-              <div 
-                className="bg-emerald-500 h-3 rounded-full transition-all duration-300" 
-                style={{ width: `${progress}%` }}
-              ></div>
+        <div className="p-6 flex flex-col gap-6">
+          {/* Professional Typography Header */}
+          <div className="text-center flex flex-col gap-1">
+            <span className="text-[10px] tracking-[0.2em] font-bold text-emerald-400 uppercase bg-emerald-500/10 px-2.5 py-1 rounded-full mx-auto mb-2 border border-emerald-500/20">
+              • WASM CLIENT RENDERING
+            </span>
+            <h1 className="text-3xl font-extrabold tracking-tight text-white">
+              Photopiler
+            </h1>
+            <p className="text-xs text-zinc-400 font-medium">
+              The instant, serverless photo-loop compiler.
+            </p>
+          </div>
+
+          {/* ENGINE STATUS TEXT AND COMPILATION MONITOR */}
+          <div className="flex flex-col gap-2 bg-zinc-900/50 p-3 rounded-xl border border-zinc-800/60">
+            <div className="flex justify-between items-center text-xs text-zinc-400 px-1">
+              <span>System Status:</span>
+              <span className={`font-semibold ${ready ? 'text-emerald-400' : 'text-amber-400 animate-pulse'}`}>
+                {status}
+              </span>
             </div>
-          )}
-          {(!ready || compiling) && (
-            <p className="text-xs text-center text-gray-500">{progress}%</p>
-          )}
-        </div>
-
-        {/* FUNCTIONAL CONTROLS */}
-        {ready && (
-          <div className="flex flex-col gap-4">
             
-            {/* Dynamic Dropdown for Aspect Ratios */}
-            <div className="flex flex-col gap-1">
-              <label className="text-sm text-gray-400">Aspect Ratio</label>
+            {/* Display progress loading indicators dynamically exclusively while processing */}
+            {compiling && (
+              <div className="mt-1 flex flex-col gap-1.5">
+                <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                  <div 
+                    className="bg-emerald-400 h-1.5 rounded-full transition-all duration-300 ease-out" 
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-zinc-500 text-right font-mono">{progress}% compiled</span>
+              </div>
+            )}
+          </div>
+
+          {/* CORE SELECTION CONTROLS PANEL */}
+          <div className="flex flex-col gap-4">
+            {/* Aspect Ratio Configuration Dropdown matrix */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Aspect Ratio Matrix</label>
               <select 
                 value={aspectRatio} 
                 onChange={(e) => setAspectRatio(e.target.value)}
-                className="p-2 bg-zinc-800 rounded border border-zinc-700 text-sm outline-none focus:border-emerald-500 text-white"
-                disabled={compiling}
+                className="w-full p-3 bg-zinc-900 rounded-xl border border-zinc-800 text-sm font-medium text-zinc-200 outline-none focus:border-emerald-500 transition-colors cursor-pointer"
+                disabled={!ready || compiling}
               >
                 <option value="16:9">Landscape (16:9)</option>
                 <option value="9:16">Portrait (9:16)</option>
                 <option value="1:1">Square (1:1)</option>
-                <option value="4:3">Classic (4:3)</option>
+                <option value="4:3">Classic Standard (4:3)</option>
                 <option value="3:4">Vertical Classic (3:4)</option>
               </select>
             </div>
 
-            {/* RESTORED: Photo Duration Control Input */}
-            <div className="flex flex-col gap-1">
-              <label className="text-sm text-gray-400">Photo Duration (Seconds per image)</label>
+            {/* Custom High-Precision Decimal Duration Input field */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Photo Duration (Seconds)</label>
               <input 
                 type="number"
-                min="0.5"
-                step="0.5"
-                value={imgDuration}
-                onChange={(e) => setImgDuration(parseFloat(e.target.value) || 1)}
-                className="p-2 bg-zinc-800 rounded border border-zinc-700 text-sm outline-none focus:border-emerald-500 text-white"
-                disabled={compiling}
+                step="0.1"
+                min="0.1"
+                max="10"
+                value={duration}
+                onChange={(e) => setDuration(e.target.value)}
+                className="w-full p-3 bg-zinc-900 rounded-xl border border-zinc-800 text-sm font-mono text-zinc-200 outline-none focus:border-emerald-500 transition-colors"
+                placeholder="e.g. 0.6"
+                disabled={!ready || compiling}
               />
             </div>
 
-            {/* RESTORED: Video End Cut-Off Control Input */}
-            <div className="flex flex-col gap-1">
-              <label className="text-sm text-gray-400">Video Cut-Off / End Time (Seconds)</label>
-              <input 
-                type="number"
-                min="1"
-                value={endSeconds}
-                onChange={(e) => setEndSeconds(parseInt(e.target.value) || 10)}
-                className="p-2 bg-zinc-800 rounded border border-zinc-700 text-sm outline-none focus:border-emerald-500 text-white"
-                disabled={compiling}
-              />
-            </div>
-
-            {/* File Inputs wrapper */}
-            <div className="flex flex-col gap-1 mt-2">
-              <label className="text-sm text-gray-400">Upload Images to Compile</label>
+            {/* Upload Selector Anchor */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Select Images</label>
               <input 
                 type="file" 
                 multiple 
                 accept="image/*"
-                disabled={compiling}
-                onChange={(e) => {
-                  if (e.target.files) compileVideo(e.target.files);
-                }}
-                className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-500/10 file:text-emerald-500 hover:file:bg-emerald-500/20 cursor-pointer"
+                disabled={!ready || compiling}
+                onChange={(e) => setSelectedFiles(e.target.files)}
+                className="block w-full text-xs text-zinc-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-zinc-800 file:text-zinc-200 hover:file:bg-zinc-700 cursor-pointer border border-zinc-800 p-2 rounded-xl bg-zinc-900/30"
               />
             </div>
-          </div>
-        )}
 
-        {/* MULTIMEDIA DISPLAY ELEMENT */}
-        {videoUrl && (
-          <div className="mt-4 flex flex-col gap-2">
-            <video src={videoUrl} controls className="w-full rounded-lg shadow-md" />
-            <a 
-              href={videoUrl} 
-              download="photopiler-output.mp4" 
-              className="text-center w-full bg-zinc-800 hover:bg-zinc-700 text-white py-2 rounded transition-colors text-sm"
+            {/* THE REQUESTED MANUALLY TRIGGERED GENERATE BUTTON */}
+            <button
+              onClick={handleGenerateVideo}
+              disabled={!ready || compiling || !selectedFiles}
+              className={`w-full mt-2 py-3 px-4 rounded-xl text-sm font-bold tracking-wide transition-all transform active:scale-[0.99] ${
+                !ready || compiling || !selectedFiles
+                  ? "bg-zinc-800 text-zinc-500 cursor-not-allowed"
+                  : "bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/10 font-extrabold"
+              }`}
             >
-              Download MP4
-            </a>
+              {compiling ? `Compiling (${progress}%)` : "Generate Video Loop"}
+            </button>
           </div>
-        )}
+
+          {/* GENERATED EMBED VIEWPORT STYLING */}
+          {videoUrl && (
+            <div className="mt-2 pt-4 border-t border-zinc-800 flex flex-col gap-3 animate-fadeIn">
+              <video src={videoUrl} controls className="w-full rounded-xl border border-zinc-800 shadow-inner bg-black" />
+              <a 
+                href={videoUrl} 
+                download="photopiler-output.mp4" 
+                className="text-center w-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 font-semibold py-2.5 rounded-xl transition-all text-xs tracking-wide"
+              >
+                Download Compiled Video
+              </a>
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );
