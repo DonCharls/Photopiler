@@ -103,7 +103,7 @@ export default function Home() {
 
       // Read final video output out of browser memory allocation
       const data = await ffmpeg.readFile("output.mp4");
-      const blob = new Blob([data], { type: "video/mp4" });
+      const blob = new Blob([data as any], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       
       setVideoUrl(url);
