@@ -14,15 +14,18 @@ export default function Home() {
   
   // Custom Controls
   const [aspectRatio, setAspectRatio] = useState("16:9");
-  const [duration, setDuration] = useState("0.6"); // Defaulting straight to your target 0.6s
+  const [duration, setDuration] = useState("0.6");
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   
-  const ffmpegRef = useRef(new FFmpeg());
+  // FIX: Start with a null reference so Next.js doesn't crash during the server build
+  const ffmpegRef = useRef<any>(null);
 
   // --- 1. SILENT BACKGROUND ENGINE INITIALIZATION ---
   useEffect(() => {
     const loadFFmpeg = async () => {
-      const ffmpeg = ffmpegRef.current;
+      // FIX: Only initialize FFmpeg here inside the browser
+      const ffmpeg = new FFmpeg();
+      ffmpegRef.current = ffmpeg;
 
       // Track compilation progress accurately from 0 to 100
       ffmpeg.on("progress", ({ progress }) => {
@@ -47,12 +50,12 @@ export default function Home() {
 
   // --- 2. ADVANCED VIDEO COMPILE PIPELINE ---
   const handleGenerateVideo = async () => {
-    if (!selectedFiles || selectedFiles.length === 0) return;
+    const ffmpeg = ffmpegRef.current;
+    if (!selectedFiles || selectedFiles.length === 0 || !ffmpeg) return;
     
     setCompiling(true);
     setProgress(0);
     setStatus("Processing frames...");
-    const ffmpeg = ffmpegRef.current;
 
     try {
       // Write images cleanly to workspace memory virtual disk
@@ -85,7 +88,7 @@ export default function Home() {
         "output.mp4"
       ]);
 
-      // Read final video output (WITH THE TYPESCRIPT FIX)
+      // Read final video output
       const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data as any], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
