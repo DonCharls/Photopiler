@@ -17,17 +17,16 @@ export default function Home() {
   const [duration, setDuration] = useState("0.6");
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   
-  // FIX: Start with a null reference so Next.js doesn't crash during the server build
+  // Start with a null reference so Next.js doesn't crash during the server build
   const ffmpegRef = useRef<any>(null);
 
   // --- 1. SILENT BACKGROUND ENGINE INITIALIZATION ---
   useEffect(() => {
     const loadFFmpeg = async () => {
-      // FIX: Only initialize FFmpeg here inside the browser
+      // Only initialize FFmpeg inside the browser
       const ffmpeg = new FFmpeg();
       ffmpegRef.current = ffmpeg;
 
-      // Track compilation progress accurately from 0 to 100
       ffmpeg.on("progress", ({ progress }) => {
         setProgress(Math.round(progress * 100));
       });
@@ -58,17 +57,14 @@ export default function Home() {
     setStatus("Processing frames...");
 
     try {
-      // Write images cleanly to workspace memory virtual disk
       for (let i = 0; i < selectedFiles.length; i++) {
         const fileData = await fetchFile(selectedFiles[i]);
         const fileName = `img${String(i + 1).padStart(3, "0")}.jpg`;
         await ffmpeg.writeFile(fileName, fileData);
       }
 
-      // Convert duration text directly to input frame rate target (FR = 1 / duration)
       const frameRate = (1 / parseFloat(duration)).toFixed(2);
 
-      // Define clear aspect matrices matching your resolution targets
       let targetW = 1920;
       let targetH = 1080;
       if (aspectRatio === "9:16") { targetW = 1080; targetH = 1920; }
@@ -76,7 +72,6 @@ export default function Home() {
       if (aspectRatio === "4:3")  { targetW = 1440; targetH = 1080; }
       if (aspectRatio === "3:4")  { targetW = 1080; targetH = 1440; }
 
-      // FFmpeg dynamic smart-crop script: Scales to cover the screen fully, then center-crops
       const filterString = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih),crop=${targetW}:${targetH}`;
 
       await ffmpeg.exec([
@@ -88,7 +83,6 @@ export default function Home() {
         "output.mp4"
       ]);
 
-      // Read final video output
       const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data as any], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
@@ -103,16 +97,17 @@ export default function Home() {
     }
   };
 
+  // --- HELPER: CALCULATE TOTAL VIDEO TIME ---
+  const totalVideoTime = selectedFiles 
+    ? (selectedFiles.length * parseFloat(duration || "0")).toFixed(1) 
+    : "0.0";
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4 bg-black text-white font-sans antialiased">
-      {/* Container holding your classic professional layout design */}
       <div className="w-full max-w-md bg-[#111] rounded-2xl border border-zinc-850 shadow-2xl overflow-hidden relative">
-        
-        {/* The Classic Blue/Green Top Accent Line Styling */}
         <div className="h-[3px] w-full bg-gradient-to-r from-cyan-500 via-emerald-500 to-emerald-400" />
 
         <div className="p-6 flex flex-col gap-6">
-          {/* Professional Typography Header */}
           <div className="text-center flex flex-col gap-1">
             <span className="text-[10px] tracking-[0.2em] font-bold text-emerald-400 uppercase bg-emerald-500/10 px-2.5 py-1 rounded-full mx-auto mb-2 border border-emerald-500/20">
               • WASM CLIENT RENDERING
@@ -125,7 +120,6 @@ export default function Home() {
             </p>
           </div>
 
-          {/* ENGINE STATUS TEXT AND COMPILATION MONITOR */}
           <div className="flex flex-col gap-2 bg-zinc-900/50 p-3 rounded-xl border border-zinc-800/60">
             <div className="flex justify-between items-center text-xs text-zinc-400 px-1">
               <span>System Status:</span>
@@ -134,7 +128,6 @@ export default function Home() {
               </span>
             </div>
             
-            {/* Display progress loading indicators dynamically exclusively while processing */}
             {compiling && (
               <div className="mt-1 flex flex-col gap-1.5">
                 <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
@@ -148,9 +141,7 @@ export default function Home() {
             )}
           </div>
 
-          {/* CORE SELECTION CONTROLS PANEL */}
           <div className="flex flex-col gap-4">
-            {/* Aspect Ratio Configuration Dropdown matrix */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Aspect Ratio Matrix</label>
               <select 
@@ -167,9 +158,10 @@ export default function Home() {
               </select>
             </div>
 
-            {/* Custom High-Precision Decimal Duration Input field */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Photo Duration (Seconds)</label>
+              <div className="flex justify-between items-center">
+                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Photo Duration (Seconds)</label>
+              </div>
               <input 
                 type="number"
                 step="0.1"
@@ -183,7 +175,6 @@ export default function Home() {
               />
             </div>
 
-            {/* Upload Selector Anchor */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Select Images</label>
               <input 
@@ -196,7 +187,26 @@ export default function Home() {
               />
             </div>
 
-            {/* THE REQUESTED MANUALLY TRIGGERED GENERATE BUTTON */}
+            {/* NEW FEATURE: FILE PREVIEW & TOTAL DURATION CALCULATION */}
+            {selectedFiles && selectedFiles.length > 0 && (
+              <div className="flex flex-col gap-2 mt-1 p-3 bg-zinc-900/40 border border-zinc-800/80 rounded-xl">
+                <div className="flex justify-between items-center border-b border-zinc-800 pb-2">
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Selected Files ({selectedFiles.length})</span>
+                  <span className="text-xs font-mono font-semibold text-emerald-400">
+                    Total Video: {totalVideoTime}s
+                  </span>
+                </div>
+                <div className="max-h-28 overflow-y-auto flex flex-col gap-1 pr-1 custom-scrollbar">
+                  {Array.from(selectedFiles).map((file, idx) => (
+                    <div key={idx} className="text-[11px] text-zinc-400 truncate flex items-center gap-2">
+                      <span className="text-zinc-600 font-mono w-4 text-right">{idx + 1}.</span>
+                      <span className="truncate">{file.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <button
               onClick={handleGenerateVideo}
               disabled={!ready || compiling || !selectedFiles}
@@ -210,7 +220,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* GENERATED EMBED VIEWPORT STYLING */}
           {videoUrl && (
             <div className="mt-2 pt-4 border-t border-zinc-800 flex flex-col gap-3 animate-fadeIn">
               <video src={videoUrl} controls className="w-full rounded-xl border border-zinc-800 shadow-inner bg-black" />
@@ -225,6 +234,14 @@ export default function Home() {
           )}
         </div>
       </div>
+      
+      {/* Scrollbar styling for the file list */}
+      <style dangerouslySetInnerHTML={{__html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #52525b; }
+      `}} />
     </main>
   );
 }
