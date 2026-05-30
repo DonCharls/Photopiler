@@ -8,22 +8,23 @@ export default function Home() {
   // --- STATE MANAGEMENT ---
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState("Preparing engine...");
-  const [progress, setProgress] = useState(0); // Tracks 0 to 100%
+  const [progress, setProgress] = useState(0); 
   const [compiling, setCompiling] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [aspectRatio, setAspectRatio] = useState("16:9");
   
-  // Ref starts as null so it doesn't execute during the Next.js server build phase
+  // RESTORED: Duration controls
+  const [imgDuration, setImgDuration] = useState<number>(3); // Seconds per photo
+  const [endSeconds, setEndSeconds] = useState<number>(15);   // Max video end time cut-off
+
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
   // --- 1. AUTO-INITIALIZE ENGINE ---
   useEffect(() => {
     const loadFFmpeg = async () => {
-      // Create the FFmpeg instance ONLY when inside the user's web browser
       const ffmpegInstance = new FFmpeg();
       ffmpegRef.current = ffmpegInstance;
 
-      // Listen to progress for both loading and compiling
       ffmpegInstance.on("progress", ({ progress }) => {
         setProgress(Math.round(progress * 100));
       });
@@ -36,7 +37,7 @@ export default function Home() {
         });
         setReady(true);
         setStatus("Engine Ready!");
-        setProgress(0); // Reset progress tracking for the compiler step
+        setProgress(0); 
       } catch (error) {
         console.error("FFmpeg load failed:", error);
         setStatus("Failed to load video engine.");
@@ -48,12 +49,11 @@ export default function Home() {
 
   // --- 2. COMPILE VIDEO FUNCTION ---
   const compileVideo = async (files: FileList) => {
-    // Safety guard to ensure files exist and the browser engine is loaded
     if (!files || files.length === 0 || !ffmpegRef.current) return;
     
     setCompiling(true);
     setProgress(0);
-    setStatus("Compiling your video... Hang tight!");
+    setStatus("Compiling your video...");
     const ffmpeg = ffmpegRef.current;
 
     try {
@@ -65,23 +65,29 @@ export default function Home() {
       }
 
       // Aspect Ratio Matrix settings mapping
-      let scale = "1920:1080"; // Default 16:9
+      let scale = "1920:1080"; 
       if (aspectRatio === "9:16") scale = "1080:1920";
       if (aspectRatio === "1:1") scale = "1080:1080";
       if (aspectRatio === "4:3") scale = "1440:1080";
       if (aspectRatio === "3:4") scale = "1080:1440";
 
-      // Execute scaling and padding operations sequentially
+      // Calculate the input framerate based on your user duration choice
+      // If a photo lasts 3 seconds, framerate needs to be 1/3
+      const inputFramerate = (1 / imgDuration).toString();
+
+      // Execute scaling, padding, custom durations, and aspect ratio hardcoding
       await ffmpeg.exec([
-        "-framerate", "1", 
+        "-framerate", inputFramerate, 
         "-i", "img%03d.jpg",
         "-vf", `scale=${scale}:force_original_aspect_ratio=decrease,pad=${scale}:(ow-iw)/2:(oh-ih)/2`,
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
+        "-aspect", aspectRatio,          // FIXED: Forces media players to render 3:4 natively instead of falling back to 4:3
+        "-t", endSeconds.toString(),      // RESTORED: Hard cut-off end time for your video output
         "output.mp4"
       ]);
 
-      // Read final video output (Using explicit type assertion to satisfy Vercel compilation checks)
+      // Read final video output (With explicit type assertion to satisfy Vercel compilation checks)
       const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data as any], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
@@ -128,7 +134,7 @@ export default function Home() {
               <select 
                 value={aspectRatio} 
                 onChange={(e) => setAspectRatio(e.target.value)}
-                className="p-2 bg-zinc-800 rounded border border-zinc-700 text-sm outline-none focus:border-emerald-500"
+                className="p-2 bg-zinc-800 rounded border border-zinc-700 text-sm outline-none focus:border-emerald-500 text-white"
                 disabled={compiling}
               >
                 <option value="16:9">Landscape (16:9)</option>
@@ -139,17 +145,47 @@ export default function Home() {
               </select>
             </div>
 
+            {/* RESTORED: Photo Duration Control Input */}
+            <div className="flex flex-col gap-1">
+              <label className="text-sm text-gray-400">Photo Duration (Seconds per image)</label>
+              <input 
+                type="number"
+                min="0.5"
+                step="0.5"
+                value={imgDuration}
+                onChange={(e) => setImgDuration(parseFloat(e.target.value) || 1)}
+                className="p-2 bg-zinc-800 rounded border border-zinc-700 text-sm outline-none focus:border-emerald-500 text-white"
+                disabled={compiling}
+              />
+            </div>
+
+            {/* RESTORED: Video End Cut-Off Control Input */}
+            <div className="flex flex-col gap-1">
+              <label className="text-sm text-gray-400">Video Cut-Off / End Time (Seconds)</label>
+              <input 
+                type="number"
+                min="1"
+                value={endSeconds}
+                onChange={(e) => setEndSeconds(parseInt(e.target.value) || 10)}
+                className="p-2 bg-zinc-800 rounded border border-zinc-700 text-sm outline-none focus:border-emerald-500 text-white"
+                disabled={compiling}
+              />
+            </div>
+
             {/* File Inputs wrapper */}
-            <input 
-              type="file" 
-              multiple 
-              accept="image/*"
-              disabled={compiling}
-              onChange={(e) => {
-                if (e.target.files) compileVideo(e.target.files);
-              }}
-              className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-500/10 file:text-emerald-500 hover:file:bg-emerald-500/20 cursor-pointer"
-            />
+            <div className="flex flex-col gap-1 mt-2">
+              <label className="text-sm text-gray-400">Upload Images to Compile</label>
+              <input 
+                type="file" 
+                multiple 
+                accept="image/*"
+                disabled={compiling}
+                onChange={(e) => {
+                  if (e.target.files) compileVideo(e.target.files);
+                }}
+                className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-500/10 file:text-emerald-500 hover:file:bg-emerald-500/20 cursor-pointer"
+              />
+            </div>
           </div>
         )}
 
