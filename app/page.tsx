@@ -421,7 +421,7 @@ export default function Home() {
                 download="photopiler-output.mp4"
                 className="text-center w-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 font-semibold py-2.5 rounded-xl transition-all text-xs tracking-wide"
               >
-                Download Compiled Video
+                Download Video
               </a>
             </div>
           )}
