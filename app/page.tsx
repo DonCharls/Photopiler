@@ -146,7 +146,9 @@ export default function Home() {
 
       const data = await ffmpeg.readFile("output.mp4") as Uint8Array;
       const blob = new Blob([data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer], { type: "video/mp4" });
-      setVideoUrl(URL.createObjectURL(blob));
+      const reader = new FileReader();
+      reader.onload = () => setVideoUrl(reader.result as string);
+      reader.readAsDataURL(blob);
       setStatus("Generation Complete!");
     } catch (e) {
       console.error(e);
