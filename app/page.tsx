@@ -14,18 +14,15 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [compiling, setCompiling] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [isLooping, setIsLooping] = useState(true);
-  const [compiledDuration, setCompiledDuration] = useState<string | null>(null);
 
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [perPhotoDuration, setPerPhotoDuration] = useState("0.6");
-  const [totalDesiredSeconds, setTotalDesiredSeconds] = useState("14.4");
+  const [loopCount, setLoopCount] = useState("1"); // Replaced total duration with exact loops
 
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [previews, setPreviews] = useState<PreviewFile[]>([]);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
   // Load FFmpeg once
   useEffect(() => {
@@ -63,29 +60,22 @@ export default function Home() {
     return () => newPreviews.forEach((p) => URL.revokeObjectURL(p.url));
   }, [selectedFiles]);
 
-  // Sync loop state with video element
-  useEffect(() => {
-    if (videoRef.current) videoRef.current.loop = isLooping;
-  }, [isLooping, videoUrl]);
-
-  // Derived values
+  // Derived mathematical values
   const fileCount = selectedFiles?.length ?? 0;
   const durSec = parseFloat(perPhotoDuration) || 0.6;
-  const totalSec = parseFloat(totalDesiredSeconds) || 0;
+  const loops = Math.max(1, parseInt(loopCount, 10) || 1); // Ensure at least 1 loop
   const oneCycleSec = fileCount * durSec;
-  const loopsNeeded = oneCycleSec > 0 ? Math.ceil(totalSec / oneCycleSec) : 1;
-  const actualOutputSec = loopsNeeded * oneCycleSec;
+  const actualOutputSec = oneCycleSec * loops;
 
   // Generate video
   const handleGenerateVideo = async () => {
     const ffmpeg = ffmpegRef.current;
     if (!selectedFiles || selectedFiles.length === 0 || !ffmpeg) return;
-    if (durSec <= 0 || totalSec <= 0) return;
+    if (durSec <= 0 || loops <= 0) return;
 
     setCompiling(true);
     setProgress(0);
     setVideoUrl(null);
-    setCompiledDuration(null);
     setStatus("Clearing previous data...");
 
     try {
@@ -110,10 +100,9 @@ export default function Home() {
 
       setStatus("Compiling video...");
 
-      // 3. Frame math
+      // 3. Exact Frame Math (Replaces floating point time calculation)
       const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
-      const totalFrames = fileCount * framesPerImage * loopsNeeded;
-      const hardEndTime = (totalFrames / OUTPUT_FPS).toFixed(6);
+      const totalFrames = fileCount * framesPerImage * loops;
 
       // 4. Crop dimensions
       let targetW = 1920, targetH = 1080;
@@ -126,15 +115,15 @@ export default function Home() {
       const cropFilter   = `crop=${targetW}:${targetH}`;
       const filterString = [scaleFilter, cropFilter, `fps=${OUTPUT_FPS}`].join(",");
 
-      // 5. -stream_loop loops the input sequence (loopsNeeded - 1 extra loops)
+      // 5. Execute FFmpeg Command with exact frame limits (-frames:v)
       await ffmpeg.exec([
-        "-stream_loop", String(loopsNeeded - 1),
+        "-stream_loop", String(loops - 1),
         "-framerate", "1",
         "-i", "img%03d.jpg",
         "-vf", filterString,
         "-c:v", "libx264",
         "-r", String(OUTPUT_FPS),
-        "-t", hardEndTime,
+        "-frames:v", String(totalFrames), // Forcing exact frame count prevents corruption
         "-pix_fmt", "yuv420p",
         "-preset", "fast",
         "output.mp4",
@@ -143,7 +132,6 @@ export default function Home() {
       const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data as unknown as BlobPart], { type: "video/mp4" });
       setVideoUrl(URL.createObjectURL(blob));
-      setCompiledDuration((totalFrames / OUTPUT_FPS).toFixed(1));
       setStatus("Generation Complete!");
     } catch (e) {
       console.error(e);
@@ -211,9 +199,9 @@ export default function Home() {
               </select>
             </div>
 
-            {/* Duration settings — BOTH active simultaneously */}
+            {/* Sequence Settings */}
             <div className="flex flex-col gap-3 p-3 bg-zinc-900/40 border border-zinc-800/60 rounded-xl">
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Duration Settings</p>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Sequence Settings</p>
 
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
@@ -234,39 +222,39 @@ export default function Home() {
 
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Total Video Duration (seconds)
+                  Number of Loops
                 </label>
                 <input
                   type="number"
-                  step="0.1"
-                  min="0.1"
-                  max="600"
-                  value={totalDesiredSeconds}
-                  onChange={(e) => setTotalDesiredSeconds(e.target.value)}
+                  step="1"
+                  min="1"
+                  max="100"
+                  value={loopCount}
+                  onChange={(e) => setLoopCount(e.target.value)}
                   className="w-full p-3 bg-zinc-900 rounded-xl border border-zinc-800 text-sm font-mono text-zinc-200 outline-none focus:border-emerald-500 transition-colors"
-                  placeholder="e.g. 14.4"
+                  placeholder="e.g. 1"
                   disabled={!ready || compiling}
                 />
               </div>
 
               {/* Live loop math preview */}
-              {fileCount > 0 && durSec > 0 && totalSec > 0 && (
+              {fileCount > 0 && durSec > 0 && loops > 0 && (
                 <div className="mt-1 p-2.5 bg-zinc-900 rounded-lg border border-zinc-800 text-[11px] text-zinc-400 space-y-1">
                   <div className="flex justify-between">
                     <span>1 cycle ({fileCount} photos × {durSec}s)</span>
                     <span className="font-mono text-zinc-300">{oneCycleSec.toFixed(1)}s</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>Loops needed</span>
-                    <span className="font-mono text-zinc-300">×{loopsNeeded}</span>
+                    <span>Total loops</span>
+                    <span className="font-mono text-zinc-300">×{loops}</span>
                   </div>
                   <div className="flex justify-between border-t border-zinc-800 pt-1">
-                    <span className="font-semibold text-zinc-300">Actual output</span>
+                    <span className="font-semibold text-zinc-300">Final Video Length</span>
                     <span className="font-mono font-bold text-emerald-400">{actualOutputSec.toFixed(1)}s</span>
                   </div>
                   {/* Sequence chips */}
                   <div className="pt-1 flex flex-wrap gap-1">
-                    {Array.from({ length: loopsNeeded }).map((_, loopIdx) =>
+                    {Array.from({ length: Math.min(loops, 20) }).map((_, loopIdx) =>
                       Array.from({ length: fileCount }).map((_, photoIdx) => (
                         <span
                           key={`${loopIdx}-${photoIdx}`}
@@ -280,6 +268,7 @@ export default function Home() {
                         </span>
                       ))
                     )}
+                    {loops > 20 && <span className="text-[9px] px-1 py-0.5 text-zinc-500">...</span>}
                   </div>
                 </div>
               )}
@@ -340,9 +329,9 @@ export default function Home() {
             {/* Generate button */}
             <button
               onClick={handleGenerateVideo}
-              disabled={!ready || compiling || !selectedFiles || durSec <= 0 || totalSec <= 0}
+              disabled={!ready || compiling || !selectedFiles || durSec <= 0 || loops <= 0}
               className={`w-full mt-2 py-3 px-4 rounded-xl text-sm font-bold tracking-wide transition-all transform active:scale-[0.99] ${
-                !ready || compiling || !selectedFiles || durSec <= 0 || totalSec <= 0
+                !ready || compiling || !selectedFiles || durSec <= 0 || loops <= 0
                   ? "bg-zinc-800 text-zinc-500 cursor-not-allowed"
                   : "bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/10 font-extrabold"
               }`}
@@ -354,39 +343,18 @@ export default function Home() {
           {/* Video output */}
           {videoUrl && (
             <div className="mt-2 pt-4 border-t border-zinc-800 flex flex-col gap-3">
-              {compiledDuration && (
-                <div className="flex justify-between items-center text-xs px-1">
-                  <span className="text-zinc-500">Compiled duration</span>
-                  <span className="font-mono font-semibold text-emerald-400">{compiledDuration}s</span>
-                </div>
-              )}
+              <div className="flex justify-between items-center text-xs px-1">
+                <span className="text-zinc-500">Final video length</span>
+                <span className="font-mono font-semibold text-emerald-400">{actualOutputSec.toFixed(1)}s</span>
+              </div>
 
               <video
-                ref={videoRef}
                 src={videoUrl}
                 controls
-                loop={isLooping}
+                loop
                 autoPlay
                 className="w-full rounded-xl border border-zinc-800 shadow-inner bg-black"
               />
-
-              <button
-                onClick={() => setIsLooping((v) => !v)}
-                className={`flex items-center justify-center gap-2 w-full py-2 rounded-xl text-xs font-semibold border transition-all ${
-                  isLooping
-                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20"
-                    : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:bg-zinc-800"
-                }`}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
-                  fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="17 1 21 5 17 9" />
-                  <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-                  <polyline points="7 23 3 19 7 15" />
-                  <path d="M21 13v2a4 4 0 0 1-4 4H3" />
-                </svg>
-                {isLooping ? "Loop: ON" : "Loop: OFF"}
-              </button>
 
               <a
                 href={videoUrl}
