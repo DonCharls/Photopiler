@@ -24,7 +24,6 @@ export default function Home() {
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
-  // Load FFmpeg once
   useEffect(() => {
     const loadFFmpeg = async () => {
       const ffmpeg = new FFmpeg();
@@ -46,7 +45,6 @@ export default function Home() {
     loadFFmpeg();
   }, []);
 
-  // Generate thumbnails
   useEffect(() => {
     if (!selectedFiles || selectedFiles.length === 0) {
       setPreviews([]);
@@ -60,14 +58,12 @@ export default function Home() {
     return () => newPreviews.forEach((p) => URL.revokeObjectURL(p.url));
   }, [selectedFiles]);
 
-  // Derived values
   const fileCount = selectedFiles?.length ?? 0;
   const durSec = parseFloat(perPhotoDuration) || 0.6;
   const loops = Math.max(1, parseInt(loopCount, 10) || 1);
   const oneCycleSec = fileCount * durSec;
   const actualOutputSec = oneCycleSec * loops;
 
-  // Generate video
   const handleGenerateVideo = async () => {
     const ffmpeg = ffmpegRef.current;
     if (!selectedFiles || selectedFiles.length === 0 || !ffmpeg) return;
@@ -79,34 +75,41 @@ export default function Home() {
     setStatus("Clearing previous data...");
 
     try {
-      // 1. Clean up leftovers
+      // 1. Clean up ALL previous files
       try {
         const files = await ffmpeg.listDir("/");
         for (const f of files) {
-          if (f.name.match(/^img\d+\.jpg$/) || f.name === "output.mp4") {
-            await ffmpeg.deleteFile(f.name);
-          }
+          if (!f.isDir) await ffmpeg.deleteFile(f.name).catch(() => {});
         }
       } catch {
         // ignore on first run
       }
 
-      // 2. Write images
-      setStatus("Writing images to memory...");
+      // 2. Pre-load each unique source image into memory as raw bytes
+      setStatus("Reading images...");
+      const imageBuffers: Uint8Array[] = [];
       for (let i = 0; i < selectedFiles.length; i++) {
-        const fileData = await fetchFile(selectedFiles[i]);
-        await ffmpeg.writeFile(`img${String(i + 1).padStart(3, "0")}.jpg`, fileData);
+        imageBuffers.push(await fetchFile(selectedFiles[i]));
       }
 
-      setStatus("Compiling video...");
-
-      // 3. Frame math
-      // framesPerImage = how many 25fps output frames each photo occupies
+      // 3. Write the full expanded sequence — no -stream_loop, no setpts tricks.
+      //    Each "slot" = one image repeated framesPerImage times as separate files.
+      //    FFmpeg reads them as one clean continuous sequence at OUTPUT_FPS.
+      setStatus("Writing sequence to memory...");
       const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
-      // Total frames across all loops
-      const totalFrames = fileCount * framesPerImage * loops;
-      // Hard stop time in seconds
-      const totalDuration = (totalFrames / OUTPUT_FPS).toFixed(6);
+      let frameIndex = 1;
+
+      for (let loop = 0; loop < loops; loop++) {
+        for (let img = 0; img < selectedFiles.length; img++) {
+          for (let f = 0; f < framesPerImage; f++) {
+            const name = `frame${String(frameIndex).padStart(5, "0")}.jpg`;
+            await ffmpeg.writeFile(name, imageBuffers[img]);
+            frameIndex++;
+          }
+        }
+      }
+
+      const totalFrames = frameIndex - 1;
 
       // 4. Crop dimensions
       let targetW = 1920, targetH = 1080;
@@ -117,23 +120,19 @@ export default function Home() {
 
       const scaleFilter = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
       const cropFilter  = `crop=${targetW}:${targetH}`;
+      const filterString = [scaleFilter, cropFilter].join(",");
 
-      // KEY FIX: use setpts to hold each frame for framesPerImage output slots.
-      // Input is read at 1fps (one image per second via -framerate 1).
-      // setpts rewrites timestamps so each frame lasts framesPerImage/OUTPUT_FPS seconds,
-      // which equals durSec. No resampler involved — no broken timestamps on loop boundaries.
-      const ptsFilter   = `setpts=${framesPerImage}*N/${OUTPUT_FPS}/TB`;
+      setStatus("Compiling video...");
 
-      const filterString = [scaleFilter, cropFilter, ptsFilter].join(",");
-
+      // 5. Encode — input IS already at OUTPUT_FPS (one file = one frame),
+      //    no resampling, no timestamp math, completely clean sequence.
       await ffmpeg.exec([
-        "-stream_loop", String(loops - 1), // repeat the image sequence N-1 extra times
-        "-framerate", "1",                 // read 1 image per second
-        "-i", "img%03d.jpg",
-        "-vf", filterString,               // scale + crop + hold each frame
+        "-framerate", String(OUTPUT_FPS),   // each file = 1 frame at OUTPUT_FPS
+        "-i", "frame%05d.jpg",
+        "-vf", filterString,
         "-c:v", "libx264",
-        "-r", String(OUTPUT_FPS),          // output container = 25fps
-        "-t", totalDuration,               // hard end — exact duration, no extra frames
+        "-r", String(OUTPUT_FPS),
+        "-frames:v", String(totalFrames),   // encode exactly this many frames
         "-pix_fmt", "yuv420p",
         "-preset", "fast",
         "output.mp4",
