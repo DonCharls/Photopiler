@@ -85,11 +85,16 @@ export default function Home() {
         // ignore on first run
       }
 
-      // 2. Pre-load each unique source image into memory as raw bytes
+      // 2. Pre-load each image as an owned ArrayBuffer.
+      //    fetchFile returns a Uint8Array whose buffer is *transferred* into
+      //    the FFmpeg worker on writeFile — detaching it after the first use.
+      //    Storing as ArrayBuffer and calling slice(0) each write gives a
+      //    fresh owned copy, preventing "ArrayBuffer is already detached".
       setStatus("Reading images...");
-      const imageBuffers: Uint8Array[] = [];
+      const imageBuffers: ArrayBuffer[] = [];
       for (let i = 0; i < selectedFiles.length; i++) {
-        imageBuffers.push(await fetchFile(selectedFiles[i]));
+        const u8 = await fetchFile(selectedFiles[i]);
+        imageBuffers.push(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer);
       }
 
       // 3. Write the full expanded sequence — no -stream_loop, no setpts tricks.
@@ -103,7 +108,7 @@ export default function Home() {
         for (let img = 0; img < selectedFiles.length; img++) {
           for (let f = 0; f < framesPerImage; f++) {
             const name = `frame${String(frameIndex).padStart(5, "0")}.jpg`;
-            await ffmpeg.writeFile(name, imageBuffers[img]);
+            await ffmpeg.writeFile(name, new Uint8Array(imageBuffers[img].slice(0)));
             frameIndex++;
           }
         }
