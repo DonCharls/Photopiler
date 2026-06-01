@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useEffect, useRef } from "react";
@@ -86,64 +85,59 @@ export default function Home() {
         // ignore on first run
       }
 
-      // 2. Write source images to memory ONCE each (Massive file system speedup)
-      setStatus("Writing source images...");
+// 2. Write each source image ONCE
+      setStatus("Writing images...");
       for (let i = 0; i < selectedFiles.length; i++) {
-        const fileData = await fetchFile(selectedFiles[i]);
-        await ffmpeg.writeFile(`img_${i}.jpg`, fileData); 
+        const u8 = await fetchFile(selectedFiles[i]);
+        await ffmpeg.writeFile(`img${i}.jpg`, new Uint8Array(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer));
       }
 
-      // 3. Set up dimensions
+      // 3. Build a concat list — each image listed once per loop, with exact duration
+      // This avoids writing thousands of duplicate frame files
+      let concatList = "";
+      for (let loop = 0; loop < loops; loop++) {
+        for (let img = 0; img < selectedFiles.length; img++) {
+          concatList += `file 'img${img}.jpg'\n`;
+          concatList += `duration ${durSec}\n`;
+        }
+      }
+      // FFmpeg concat requires a final file entry with no duration
+      concatList += `file 'img${selectedFiles.length - 1}.jpg'\n`;
+      await ffmpeg.writeFile("concat.txt", concatList);
+
+      // 4. Crop dimensions
       let targetW = 1920, targetH = 1080;
-      if (aspectRatio === "9:16")       { targetW = 1080; targetH = 1920; }
-      else if (aspectRatio === "1:1")   { targetW = 1080; targetH = 1080; }
-      else if (aspectRatio === "4:3")   { targetW = 1440; targetH = 1080; }
-      else if (aspectRatio === "3:4")   { targetW = 1080; targetH = 1440; }
+      if (aspectRatio === "9:16")     { targetW = 1080; targetH = 1920; }
+      else if (aspectRatio === "1:1") { targetW = 1080; targetH = 1080; }
+      else if (aspectRatio === "4:3") { targetW = 1440; targetH = 1080; }
+      else if (aspectRatio === "3:4") { targetW = 1080; targetH = 1440; }
 
-      setStatus("Compiling high-speed loop...");
-
-      // 4. Calculate total explicit frames for math tracking
-      const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
-      const totalFrames = fileCount * framesPerImage * loops;
-
-      // 5. Build scaling filters
       const scaleFilter = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
       const cropFilter  = `crop=${targetW}:${targetH}`;
 
-      // 6. Fast filter processing logic 
+      setStatus("Compiling video...");
+
+      const totalFrames = Math.round(actualOutputSec * OUTPUT_FPS);
+
       await ffmpeg.exec([
-        "-framerate", String(1 / durSec),        // Read images matching your exact layout duration natively
-        "-i", "img_%d.jpg",
-        "-stream_loop", String(loops - 1),       // Loop the sequence structure natively in memory
-        "-vf", `${scaleFilter},${cropFilter},fps=${OUTPUT_FPS}`,
+        "-f", "concat",
+        "-safe", "0",
+        "-i", "concat.txt",
+        "-vf", `${scaleFilter},${cropFilter}`,
         "-c:v", "libx264",
         "-r", String(OUTPUT_FPS),
-        "-frames:v", String(totalFrames),        // Enforce exact length constraint 
+        "-frames:v", String(totalFrames),
         "-pix_fmt", "yuv420p",
-        "-preset", "ultrafast",                  // Prioritize rendering speed over intense compression size
+        "-preset", "ultrafast",
         "-movflags", "+faststart",
         "output.mp4",
       ]);
 
-      // 7. Robust reading, console inspection, and verification checks
       const data = await ffmpeg.readFile("output.mp4") as Uint8Array;
-      console.log("output.mp4 byte length:", data.byteLength);
-
-      if (data.byteLength === 0) {
-        setStatus("Compilation Error: output is empty.");
-        return;
-      }
-
-      const blob = new Blob([new Uint8Array(data)], { type: "video/mp4" });
-      await new Promise<void>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          setVideoUrl(reader.result as string);
-          resolve();
-        };
-        reader.readAsDataURL(blob);
-      });
-
+      const blob = new Blob([data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer], { type: "video/mp4" });
+      const reader = new FileReader();
+      reader.onload = () => setVideoUrl(reader.result as string);
+      reader.readAsDataURL(blob);
       setStatus("Generation Complete!");
     } catch (e) {
       console.error(e);
