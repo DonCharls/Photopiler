@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, useRef } from "react";
@@ -85,70 +86,64 @@ export default function Home() {
         // ignore on first run
       }
 
-      // 2. Pre-load each image as an owned ArrayBuffer.
-      //    fetchFile returns a Uint8Array whose buffer is *transferred* into
-      //    the FFmpeg worker on writeFile — detaching it after the first use.
-      //    Storing as ArrayBuffer and calling slice(0) each write gives a
-      //    fresh owned copy, preventing "ArrayBuffer is already detached".
-      setStatus("Reading images...");
-      const imageBuffers: ArrayBuffer[] = [];
+      // 2. Write source images to memory ONCE each (Massive file system speedup)
+      setStatus("Writing source images...");
       for (let i = 0; i < selectedFiles.length; i++) {
-        const u8 = await fetchFile(selectedFiles[i]);
-        imageBuffers.push(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer);
+        const fileData = await fetchFile(selectedFiles[i]);
+        await ffmpeg.writeFile(`img_${i}.jpg`, fileData); 
       }
 
-      // 3. Write the full expanded sequence — no -stream_loop, no setpts tricks.
-      //    Each "slot" = one image repeated framesPerImage times as separate files.
-      //    FFmpeg reads them as one clean continuous sequence at OUTPUT_FPS.
-      setStatus("Writing sequence to memory...");
-      const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
-      let frameIndex = 1;
-
-      for (let loop = 0; loop < loops; loop++) {
-        for (let img = 0; img < selectedFiles.length; img++) {
-          for (let f = 0; f < framesPerImage; f++) {
-            const name = `frame${String(frameIndex).padStart(5, "0")}.jpg`;
-            await ffmpeg.writeFile(name, new Uint8Array(imageBuffers[img].slice(0)));
-            frameIndex++;
-          }
-        }
-      }
-
-      const totalFrames = frameIndex - 1;
-
-      // 4. Crop dimensions
+      // 3. Set up dimensions
       let targetW = 1920, targetH = 1080;
-      if (aspectRatio === "9:16")     { targetW = 1080; targetH = 1920; }
-      else if (aspectRatio === "1:1") { targetW = 1080; targetH = 1080; }
-      else if (aspectRatio === "4:3") { targetW = 1440; targetH = 1080; }
-      else if (aspectRatio === "3:4") { targetW = 1080; targetH = 1440; }
+      if (aspectRatio === "9:16")       { targetW = 1080; targetH = 1920; }
+      else if (aspectRatio === "1:1")   { targetW = 1080; targetH = 1080; }
+      else if (aspectRatio === "4:3")   { targetW = 1440; targetH = 1080; }
+      else if (aspectRatio === "3:4")   { targetW = 1080; targetH = 1440; }
 
+      setStatus("Compiling high-speed loop...");
+
+      // 4. Calculate total explicit frames for math tracking
+      const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
+      const totalFrames = fileCount * framesPerImage * loops;
+
+      // 5. Build scaling filters
       const scaleFilter = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
       const cropFilter  = `crop=${targetW}:${targetH}`;
-      const filterString = [scaleFilter, cropFilter].join(",");
 
-      setStatus("Compiling video...");
-
-      // 5. Encode — input IS already at OUTPUT_FPS (one file = one frame),
-      //    no resampling, no timestamp math, completely clean sequence.
+      // 6. Fast filter processing logic 
       await ffmpeg.exec([
-        "-framerate", String(OUTPUT_FPS),   // each file = 1 frame at OUTPUT_FPS
-        "-i", "frame%05d.jpg",
-        "-vf", filterString,
+        "-framerate", String(1 / durSec),        // Read images matching your exact layout duration natively
+        "-i", "img_%d.jpg",
+        "-stream_loop", String(loops - 1),       // Loop the sequence structure natively in memory
+        "-vf", `${scaleFilter},${cropFilter},fps=${OUTPUT_FPS}`,
         "-c:v", "libx264",
         "-r", String(OUTPUT_FPS),
-        "-frames:v", String(totalFrames),   // encode exactly this many frames
+        "-frames:v", String(totalFrames),        // Enforce exact length constraint 
         "-pix_fmt", "yuv420p",
-        "-preset", "fast",
+        "-preset", "ultrafast",                  // Prioritize rendering speed over intense compression size
         "-movflags", "+faststart",
         "output.mp4",
       ]);
 
+      // 7. Robust reading, console inspection, and verification checks
       const data = await ffmpeg.readFile("output.mp4") as Uint8Array;
-      const blob = new Blob([data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer], { type: "video/mp4" });
-      const reader = new FileReader();
-      reader.onload = () => setVideoUrl(reader.result as string);
-      reader.readAsDataURL(blob);
+      console.log("output.mp4 byte length:", data.byteLength);
+
+      if (data.byteLength === 0) {
+        setStatus("Compilation Error: output is empty.");
+        return;
+      }
+
+      const blob = new Blob([new Uint8Array(data)], { type: "video/mp4" });
+      await new Promise<void>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          setVideoUrl(reader.result as string);
+          resolve();
+        };
+        reader.readAsDataURL(blob);
+      });
+
       setStatus("Generation Complete!");
     } catch (e) {
       console.error(e);
