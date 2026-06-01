@@ -17,7 +17,7 @@ export default function Home() {
 
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [perPhotoDuration, setPerPhotoDuration] = useState("0.6");
-  const [loopCount, setLoopCount] = useState("1"); // Replaced total duration with exact loops
+  const [loopCount, setLoopCount] = useState("1");
 
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [previews, setPreviews] = useState<PreviewFile[]>([]);
@@ -60,10 +60,10 @@ export default function Home() {
     return () => newPreviews.forEach((p) => URL.revokeObjectURL(p.url));
   }, [selectedFiles]);
 
-  // Derived mathematical values
+  // Derived values
   const fileCount = selectedFiles?.length ?? 0;
   const durSec = parseFloat(perPhotoDuration) || 0.6;
-  const loops = Math.max(1, parseInt(loopCount, 10) || 1); // Ensure at least 1 loop
+  const loops = Math.max(1, parseInt(loopCount, 10) || 1);
   const oneCycleSec = fileCount * durSec;
   const actualOutputSec = oneCycleSec * loops;
 
@@ -100,30 +100,40 @@ export default function Home() {
 
       setStatus("Compiling video...");
 
-      // 3. Exact Frame Math (Replaces floating point time calculation)
+      // 3. Frame math
+      // framesPerImage = how many 25fps output frames each photo occupies
       const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
+      // Total frames across all loops
       const totalFrames = fileCount * framesPerImage * loops;
+      // Hard stop time in seconds
+      const totalDuration = (totalFrames / OUTPUT_FPS).toFixed(6);
 
       // 4. Crop dimensions
       let targetW = 1920, targetH = 1080;
-      if (aspectRatio === "9:16")       { targetW = 1080; targetH = 1920; }
-      else if (aspectRatio === "1:1")   { targetW = 1080; targetH = 1080; }
-      else if (aspectRatio === "4:3")   { targetW = 1440; targetH = 1080; }
-      else if (aspectRatio === "3:4")   { targetW = 1080; targetH = 1440; }
+      if (aspectRatio === "9:16")     { targetW = 1080; targetH = 1920; }
+      else if (aspectRatio === "1:1") { targetW = 1080; targetH = 1080; }
+      else if (aspectRatio === "4:3") { targetW = 1440; targetH = 1080; }
+      else if (aspectRatio === "3:4") { targetW = 1080; targetH = 1440; }
 
-      const scaleFilter  = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
-      const cropFilter   = `crop=${targetW}:${targetH}`;
-      const filterString = [scaleFilter, cropFilter, `fps=${OUTPUT_FPS}`].join(",");
+      const scaleFilter = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
+      const cropFilter  = `crop=${targetW}:${targetH}`;
 
-      // 5. Execute FFmpeg Command with exact frame limits (-frames:v)
+      // KEY FIX: use setpts to hold each frame for framesPerImage output slots.
+      // Input is read at 1fps (one image per second via -framerate 1).
+      // setpts rewrites timestamps so each frame lasts framesPerImage/OUTPUT_FPS seconds,
+      // which equals durSec. No resampler involved — no broken timestamps on loop boundaries.
+      const ptsFilter   = `setpts=${framesPerImage}*N/${OUTPUT_FPS}/TB`;
+
+      const filterString = [scaleFilter, cropFilter, ptsFilter].join(",");
+
       await ffmpeg.exec([
-        "-stream_loop", String(loops - 1),
-        "-framerate", "1",
+        "-stream_loop", String(loops - 1), // repeat the image sequence N-1 extra times
+        "-framerate", "1",                 // read 1 image per second
         "-i", "img%03d.jpg",
-        "-vf", filterString,
+        "-vf", filterString,               // scale + crop + hold each frame
         "-c:v", "libx264",
-        "-r", String(OUTPUT_FPS),
-        "-frames:v", String(totalFrames), // Forcing exact frame count prevents corruption
+        "-r", String(OUTPUT_FPS),          // output container = 25fps
+        "-t", totalDuration,               // hard end — exact duration, no extra frames
         "-pix_fmt", "yuv420p",
         "-preset", "fast",
         "output.mp4",
@@ -237,7 +247,7 @@ export default function Home() {
                 />
               </div>
 
-              {/* Live loop math preview */}
+              {/* Live math preview */}
               {fileCount > 0 && durSec > 0 && loops > 0 && (
                 <div className="mt-1 p-2.5 bg-zinc-900 rounded-lg border border-zinc-800 text-[11px] text-zinc-400 space-y-1">
                   <div className="flex justify-between">
@@ -252,7 +262,6 @@ export default function Home() {
                     <span className="font-semibold text-zinc-300">Final Video Length</span>
                     <span className="font-mono font-bold text-emerald-400">{actualOutputSec.toFixed(1)}s</span>
                   </div>
-                  {/* Sequence chips */}
                   <div className="pt-1 flex flex-wrap gap-1">
                     {Array.from({ length: Math.min(loops, 20) }).map((_, loopIdx) =>
                       Array.from({ length: fileCount }).map((_, photoIdx) => (
