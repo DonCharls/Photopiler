@@ -140,6 +140,7 @@ export default function Home() {
         "-frames:v", String(totalFrames),   // encode exactly this many frames
         "-pix_fmt", "yuv420p",
         "-preset", "fast",
+        "-movflags", "+faststart",
         "output.mp4",
       ]);
 
