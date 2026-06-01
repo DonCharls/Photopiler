@@ -15,22 +15,19 @@ export default function Home() {
   const [compiling, setCompiling] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isLooping, setIsLooping] = useState(true);
+  const [compiledDuration, setCompiledDuration] = useState<string | null>(null);
 
   const [aspectRatio, setAspectRatio] = useState("16:9");
-
-  // "per photo" duration — derived from totalDesiredSeconds if set
-  const [durationMode, setDurationMode] = useState<"per-photo" | "total">("per-photo");
   const [perPhotoDuration, setPerPhotoDuration] = useState("0.6");
-  const [totalDesiredSeconds, setTotalDesiredSeconds] = useState("10");
+  const [totalDesiredSeconds, setTotalDesiredSeconds] = useState("14.4");
 
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [previews, setPreviews] = useState<PreviewFile[]>([]);
-  const [compiledDuration, setCompiledDuration] = useState<string | null>(null);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // ─── Load FFmpeg once ────────────────────────────────────────────────────
+  // Load FFmpeg once
   useEffect(() => {
     const loadFFmpeg = async () => {
       const ffmpeg = new FFmpeg();
@@ -52,7 +49,7 @@ export default function Home() {
     loadFFmpeg();
   }, []);
 
-  // ─── Generate thumbnails ─────────────────────────────────────────────────
+  // Generate thumbnails
   useEffect(() => {
     if (!selectedFiles || selectedFiles.length === 0) {
       setPreviews([]);
@@ -66,32 +63,24 @@ export default function Home() {
     return () => newPreviews.forEach((p) => URL.revokeObjectURL(p.url));
   }, [selectedFiles]);
 
-  // ─── Sync loop state ─────────────────────────────────────────────────────
+  // Sync loop state with video element
   useEffect(() => {
     if (videoRef.current) videoRef.current.loop = isLooping;
   }, [isLooping, videoUrl]);
 
-  // ─── Resolve effective duration per photo ────────────────────────────────
+  // Derived values
   const fileCount = selectedFiles?.length ?? 0;
+  const durSec = parseFloat(perPhotoDuration) || 0.6;
+  const totalSec = parseFloat(totalDesiredSeconds) || 0;
+  const oneCycleSec = fileCount * durSec;
+  const loopsNeeded = oneCycleSec > 0 ? Math.ceil(totalSec / oneCycleSec) : 1;
+  const actualOutputSec = loopsNeeded * oneCycleSec;
 
-  const effectiveDurSec = (() => {
-    if (durationMode === "total") {
-      const total = parseFloat(totalDesiredSeconds) || 0;
-      return fileCount > 0 ? total / fileCount : 0;
-    }
-    return parseFloat(perPhotoDuration) || 0;
-  })();
-
-  const expectedTotal =
-    durationMode === "total"
-      ? parseFloat(totalDesiredSeconds) || 0
-      : fileCount * effectiveDurSec;
-
-  // ─── Generate video ──────────────────────────────────────────────────────
+  // Generate video
   const handleGenerateVideo = async () => {
     const ffmpeg = ffmpegRef.current;
     if (!selectedFiles || selectedFiles.length === 0 || !ffmpeg) return;
-    if (effectiveDurSec <= 0) return;
+    if (durSec <= 0 || totalSec <= 0) return;
 
     setCompiling(true);
     setProgress(0);
@@ -100,7 +89,7 @@ export default function Home() {
     setStatus("Clearing previous data...");
 
     try {
-      // 1. Clean up leftovers from previous run
+      // 1. Clean up leftovers
       try {
         const files = await ffmpeg.listDir("/");
         for (const f of files) {
@@ -112,7 +101,7 @@ export default function Home() {
         // ignore on first run
       }
 
-      // 2. Write images sequentially
+      // 2. Write images
       setStatus("Writing images to memory...");
       for (let i = 0; i < selectedFiles.length; i++) {
         const fileData = await fetchFile(selectedFiles[i]);
@@ -121,38 +110,31 @@ export default function Home() {
 
       setStatus("Compiling video...");
 
-      // 3. Frame math — always encode at OUTPUT_FPS (25fps)
-      //    Each image is held for framesPerImage frames via setpts.
-      const framesPerImage = Math.max(1, Math.round(effectiveDurSec * OUTPUT_FPS));
-      const totalFrames = selectedFiles.length * framesPerImage;
-      const totalDuration = (totalFrames / OUTPUT_FPS).toFixed(6);
+      // 3. Frame math
+      const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
+      const totalFrames = fileCount * framesPerImage * loopsNeeded;
+      const hardEndTime = (totalFrames / OUTPUT_FPS).toFixed(6);
 
       // 4. Crop dimensions
       let targetW = 1920, targetH = 1080;
-      if (aspectRatio === "9:16")  { targetW = 1080; targetH = 1920; }
-      else if (aspectRatio === "1:1")  { targetW = 1080; targetH = 1080; }
-      else if (aspectRatio === "4:3")  { targetW = 1440; targetH = 1080; }
-      else if (aspectRatio === "3:4")  { targetW = 1080; targetH = 1440; }
+      if (aspectRatio === "9:16")       { targetW = 1080; targetH = 1920; }
+      else if (aspectRatio === "1:1")   { targetW = 1080; targetH = 1080; }
+      else if (aspectRatio === "4:3")   { targetW = 1440; targetH = 1080; }
+      else if (aspectRatio === "3:4")   { targetW = 1080; targetH = 1440; }
 
-      // 5. Filter chain:
-      //    - scale to fill the target size
-      //    - crop to exact dimensions
-      //    - setpts: multiply PTS so each frame is held for framesPerImage output frames
-      //    This is done by feeding input at 1fps (one image per second),
-      //    then using setpts to stretch PTS by framesPerImage, giving correct
-      //    timestamps at OUTPUT_FPS without any resampler confusion.
-      const scaleFilter = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
-      const cropFilter  = `crop=${targetW}:${targetH}`;
-      const ptsFilter   = `setpts=${framesPerImage}*N/${OUTPUT_FPS}/TB`;
-      const filterString = [scaleFilter, cropFilter, ptsFilter].join(",");
+      const scaleFilter  = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
+      const cropFilter   = `crop=${targetW}:${targetH}`;
+      const filterString = [scaleFilter, cropFilter, `fps=${OUTPUT_FPS}`].join(",");
 
+      // 5. -stream_loop loops the input sequence (loopsNeeded - 1 extra loops)
       await ffmpeg.exec([
-        "-framerate", "1",          // read 1 image per second from the sequence
+        "-stream_loop", String(loopsNeeded - 1),
+        "-framerate", "1",
         "-i", "img%03d.jpg",
-        "-vf", filterString,        // scale + crop + hold each frame
+        "-vf", filterString,
         "-c:v", "libx264",
-        "-r", String(OUTPUT_FPS),   // output container runs at 25fps
-        "-t", totalDuration,        // hard end time — no extra frames
+        "-r", String(OUTPUT_FPS),
+        "-t", hardEndTime,
         "-pix_fmt", "yuv420p",
         "-preset", "fast",
         "output.mp4",
@@ -171,7 +153,6 @@ export default function Home() {
     }
   };
 
-  // ────────────────────────────────────────────────────────────────────────
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4 bg-black text-white font-sans antialiased">
       <div className="w-full max-w-md bg-[#111] rounded-2xl border border-zinc-800 shadow-2xl overflow-hidden">
@@ -230,38 +211,11 @@ export default function Home() {
               </select>
             </div>
 
-            {/* Duration mode toggle */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Duration Mode</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setDurationMode("per-photo")}
-                  disabled={!ready || compiling}
-                  className={`py-2 rounded-xl text-xs font-semibold border transition-all ${
-                    durationMode === "per-photo"
-                      ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-400"
-                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:bg-zinc-800"
-                  }`}
-                >
-                  Per Photo
-                </button>
-                <button
-                  onClick={() => setDurationMode("total")}
-                  disabled={!ready || compiling}
-                  className={`py-2 rounded-xl text-xs font-semibold border transition-all ${
-                    durationMode === "total"
-                      ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-400"
-                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:bg-zinc-800"
-                  }`}
-                >
-                  Total Duration
-                </button>
-              </div>
-            </div>
+            {/* Duration settings — BOTH active simultaneously */}
+            <div className="flex flex-col gap-3 p-3 bg-zinc-900/40 border border-zinc-800/60 rounded-xl">
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Duration Settings</p>
 
-            {/* Duration input — changes based on mode */}
-            {durationMode === "per-photo" ? (
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col gap-1">
                 <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
                   Seconds Per Photo
                 </label>
@@ -276,39 +230,60 @@ export default function Home() {
                   placeholder="e.g. 0.6"
                   disabled={!ready || compiling}
                 />
-                {fileCount > 0 && (
-                  <p className="text-[11px] text-zinc-500 px-1">
-                    {fileCount} photos × {perPhotoDuration}s ={" "}
-                    <span className="text-emerald-400 font-semibold">{expectedTotal.toFixed(1)}s total</span>
-                  </p>
-                )}
               </div>
-            ) : (
-              <div className="flex flex-col gap-1.5">
+
+              <div className="flex flex-col gap-1">
                 <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
                   Total Video Duration (seconds)
                 </label>
                 <input
                   type="number"
-                  step="1"
-                  min="1"
+                  step="0.1"
+                  min="0.1"
                   max="600"
                   value={totalDesiredSeconds}
                   onChange={(e) => setTotalDesiredSeconds(e.target.value)}
                   className="w-full p-3 bg-zinc-900 rounded-xl border border-zinc-800 text-sm font-mono text-zinc-200 outline-none focus:border-emerald-500 transition-colors"
-                  placeholder="e.g. 30"
+                  placeholder="e.g. 14.4"
                   disabled={!ready || compiling}
                 />
-                {fileCount > 0 && (
-                  <p className="text-[11px] text-zinc-500 px-1">
-                    {totalDesiredSeconds}s ÷ {fileCount} photos ={" "}
-                    <span className="text-emerald-400 font-semibold">
-                      {effectiveDurSec.toFixed(2)}s per photo
-                    </span>
-                  </p>
-                )}
               </div>
-            )}
+
+              {/* Live loop math preview */}
+              {fileCount > 0 && durSec > 0 && totalSec > 0 && (
+                <div className="mt-1 p-2.5 bg-zinc-900 rounded-lg border border-zinc-800 text-[11px] text-zinc-400 space-y-1">
+                  <div className="flex justify-between">
+                    <span>1 cycle ({fileCount} photos × {durSec}s)</span>
+                    <span className="font-mono text-zinc-300">{oneCycleSec.toFixed(1)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Loops needed</span>
+                    <span className="font-mono text-zinc-300">×{loopsNeeded}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-zinc-800 pt-1">
+                    <span className="font-semibold text-zinc-300">Actual output</span>
+                    <span className="font-mono font-bold text-emerald-400">{actualOutputSec.toFixed(1)}s</span>
+                  </div>
+                  {/* Sequence chips */}
+                  <div className="pt-1 flex flex-wrap gap-1">
+                    {Array.from({ length: loopsNeeded }).map((_, loopIdx) =>
+                      Array.from({ length: fileCount }).map((_, photoIdx) => (
+                        <span
+                          key={`${loopIdx}-${photoIdx}`}
+                          className={`text-[9px] font-mono px-1 py-0.5 rounded ${
+                            loopIdx === 0
+                              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                              : "bg-zinc-800 text-zinc-500 border border-zinc-700"
+                          }`}
+                        >
+                          {photoIdx + 1}
+                        </span>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* File input */}
             <div className="flex flex-col gap-1.5">
@@ -323,19 +298,18 @@ export default function Home() {
               />
             </div>
 
-            {/* Preview strip + file list */}
+            {/* Thumbnail strip + file list */}
             {selectedFiles && selectedFiles.length > 0 && (
-              <div className="flex flex-col gap-2 mt-1 p-3 bg-zinc-900/40 border border-zinc-800/80 rounded-xl">
+              <div className="flex flex-col gap-2 p-3 bg-zinc-900/40 border border-zinc-800/80 rounded-xl">
                 <div className="flex justify-between items-center border-b border-zinc-800 pb-2">
                   <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
                     Selected ({selectedFiles.length})
                   </span>
                   <span className="text-xs font-mono font-semibold text-emerald-400">
-                    {expectedTotal.toFixed(1)}s
+                    {oneCycleSec.toFixed(1)}s / cycle
                   </span>
                 </div>
 
-                {/* Thumbnail strip */}
                 <div className="flex gap-2 overflow-x-auto pb-1 custom-scrollbar-x">
                   {previews.map((p, idx) => (
                     <div key={idx} className="relative flex-shrink-0">
@@ -352,7 +326,6 @@ export default function Home() {
                   ))}
                 </div>
 
-                {/* File name list */}
                 <div className="max-h-20 overflow-y-auto flex flex-col gap-1 pr-1 custom-scrollbar">
                   {Array.from(selectedFiles).map((file, idx) => (
                     <div key={idx} className="text-[11px] text-zinc-400 truncate flex items-center gap-2">
@@ -367,9 +340,9 @@ export default function Home() {
             {/* Generate button */}
             <button
               onClick={handleGenerateVideo}
-              disabled={!ready || compiling || !selectedFiles}
+              disabled={!ready || compiling || !selectedFiles || durSec <= 0 || totalSec <= 0}
               className={`w-full mt-2 py-3 px-4 rounded-xl text-sm font-bold tracking-wide transition-all transform active:scale-[0.99] ${
-                !ready || compiling || !selectedFiles
+                !ready || compiling || !selectedFiles || durSec <= 0 || totalSec <= 0
                   ? "bg-zinc-800 text-zinc-500 cursor-not-allowed"
                   : "bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/10 font-extrabold"
               }`}
@@ -397,7 +370,6 @@ export default function Home() {
                 className="w-full rounded-xl border border-zinc-800 shadow-inner bg-black"
               />
 
-              {/* Loop toggle */}
               <button
                 onClick={() => setIsLooping((v) => !v)}
                 className={`flex items-center justify-center gap-2 w-full py-2 rounded-xl text-xs font-semibold border transition-all ${
@@ -421,7 +393,7 @@ export default function Home() {
                 download="photopiler-output.mp4"
                 className="text-center w-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 font-semibold py-2.5 rounded-xl transition-all text-xs tracking-wide"
               >
-                Download Video
+                Download Compiled Video
               </a>
             </div>
           )}
