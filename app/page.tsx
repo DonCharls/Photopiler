@@ -17,11 +17,7 @@ export default function Home() {
 
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [perPhotoDuration, setPerPhotoDuration] = useState("0.6");
-<<<<<<< HEAD
   const [loopCount, setLoopCount] = useState("1");
-=======
-  const [loopCount, setLoopCount] = useState("1"); // Replaced total duration with exact loops
->>>>>>> 40b69d1668725f267980bbb0e53003b2418efa9d
 
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [previews, setPreviews] = useState<PreviewFile[]>([]);
@@ -64,17 +60,10 @@ export default function Home() {
     return () => newPreviews.forEach((p) => URL.revokeObjectURL(p.url));
   }, [selectedFiles]);
 
-<<<<<<< HEAD
   // Derived values
   const fileCount = selectedFiles?.length ?? 0;
   const durSec = parseFloat(perPhotoDuration) || 0.6;
   const loops = Math.max(1, parseInt(loopCount, 10) || 1);
-=======
-  // Derived mathematical values
-  const fileCount = selectedFiles?.length ?? 0;
-  const durSec = parseFloat(perPhotoDuration) || 0.6;
-  const loops = Math.max(1, parseInt(loopCount, 10) || 1); // Ensure at least 1 loop
->>>>>>> 40b69d1668725f267980bbb0e53003b2418efa9d
   const oneCycleSec = fileCount * durSec;
   const actualOutputSec = oneCycleSec * loops;
 
@@ -111,7 +100,6 @@ export default function Home() {
 
       setStatus("Compiling video...");
 
-<<<<<<< HEAD
       // 3. Frame math
       // framesPerImage = how many 25fps output frames each photo occupies
       const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
@@ -119,11 +107,6 @@ export default function Home() {
       const totalFrames = fileCount * framesPerImage * loops;
       // Hard stop time in seconds
       const totalDuration = (totalFrames / OUTPUT_FPS).toFixed(6);
-=======
-      // 3. Exact Frame Math (Replaces floating point time calculation)
-      const framesPerImage = Math.max(1, Math.round(durSec * OUTPUT_FPS));
-      const totalFrames = fileCount * framesPerImage * loops;
->>>>>>> 40b69d1668725f267980bbb0e53003b2418efa9d
 
       // 4. Crop dimensions
       let targetW = 1920, targetH = 1080;
@@ -143,26 +126,14 @@ export default function Home() {
 
       const filterString = [scaleFilter, cropFilter, ptsFilter].join(",");
 
-<<<<<<< HEAD
       await ffmpeg.exec([
         "-stream_loop", String(loops - 1), // repeat the image sequence N-1 extra times
         "-framerate", "1",                 // read 1 image per second
-=======
-      // 5. Execute FFmpeg Command with exact frame limits (-frames:v)
-      await ffmpeg.exec([
-        "-stream_loop", String(loops - 1),
-        "-framerate", "1",
->>>>>>> 40b69d1668725f267980bbb0e53003b2418efa9d
         "-i", "img%03d.jpg",
         "-vf", filterString,               // scale + crop + hold each frame
         "-c:v", "libx264",
-<<<<<<< HEAD
         "-r", String(OUTPUT_FPS),          // output container = 25fps
         "-t", totalDuration,               // hard end — exact duration, no extra frames
-=======
-        "-r", String(OUTPUT_FPS),
-        "-frames:v", String(totalFrames), // Forcing exact frame count prevents corruption
->>>>>>> 40b69d1668725f267980bbb0e53003b2418efa9d
         "-pix_fmt", "yuv420p",
         "-preset", "fast",
         "output.mp4",
@@ -276,11 +247,7 @@ export default function Home() {
                 />
               </div>
 
-<<<<<<< HEAD
               {/* Live math preview */}
-=======
-              {/* Live loop math preview */}
->>>>>>> 40b69d1668725f267980bbb0e53003b2418efa9d
               {fileCount > 0 && durSec > 0 && loops > 0 && (
                 <div className="mt-1 p-2.5 bg-zinc-900 rounded-lg border border-zinc-800 text-[11px] text-zinc-400 space-y-1">
                   <div className="flex justify-between">
