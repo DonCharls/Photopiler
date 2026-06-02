@@ -75,7 +75,7 @@ export default function Home() {
     setStatus("Clearing previous data...");
 
     try {
-      // 1. Clean up ALL previous files
+      // 1. Clean up ALL previous files cleanly
       try {
         const files = await ffmpeg.listDir("/");
         for (const f of files) {
@@ -85,15 +85,15 @@ export default function Home() {
         // ignore on first run
       }
 
-// 2. Write each source image ONCE
+      // 2. Write each source image safely
       setStatus("Writing images...");
       for (let i = 0; i < selectedFiles.length; i++) {
         const u8 = await fetchFile(selectedFiles[i]);
-        await ffmpeg.writeFile(`img${i}.jpg`, new Uint8Array(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer));
+        // Directly pass the Uint8Array container to ensure valid asset conversion
+        await ffmpeg.writeFile(`img${i}.jpg`, new Uint8Array(u8));
       }
 
-      // 3. Build a concat list — each image listed once per loop, with exact duration
-      // This avoids writing thousands of duplicate frame files
+      // 3. Build a robust concat list
       let concatList = "";
       for (let loop = 0; loop < loops; loop++) {
         for (let img = 0; img < selectedFiles.length; img++) {
@@ -101,7 +101,8 @@ export default function Home() {
           concatList += `duration ${durSec}\n`;
         }
       }
-      // FFmpeg concat requires a final file entry with no duration
+      
+      // Repeating the final item explicitly satisfies FFmpeg's read requirements
       concatList += `file 'img${selectedFiles.length - 1}.jpg'\n`;
       await ffmpeg.writeFile("concat.txt", concatList);
 
@@ -117,27 +118,45 @@ export default function Home() {
 
       setStatus("Compiling video...");
 
-      const totalFrames = Math.round(actualOutputSec * OUTPUT_FPS);
-
       await ffmpeg.exec([
         "-f", "concat",
         "-safe", "0",
         "-i", "concat.txt",
-        "-vf", `${scaleFilter},${cropFilter}`,
+        "-vf", `${scaleFilter},${cropFilter},format=yuv420p`,
         "-c:v", "libx264",
         "-r", String(OUTPUT_FPS),
-        "-frames:v", String(totalFrames),
-        "-pix_fmt", "yuv420p",
         "-preset", "ultrafast",
         "-movflags", "+faststart",
         "output.mp4",
       ]);
 
-      const data = await ffmpeg.readFile("output.mp4") as Uint8Array;
-      const blob = new Blob([data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer], { type: "video/mp4" });
-      const reader = new FileReader();
-      reader.onload = () => setVideoUrl(reader.result as string);
-      reader.readAsDataURL(blob);
+      setStatus("Reading generated video...");
+      
+      // --- APPLIED TYPE-SAFE FIX FOR Uint8Array AND SharedArrayBuffer ---
+      const rawData = await ffmpeg.readFile("output.mp4");
+      
+      let finalUint8Array: Uint8Array;
+      if (typeof rawData === "string") {
+        finalUint8Array = new TextEncoder().encode(rawData);
+      } else if (rawData instanceof Uint8Array) {
+        finalUint8Array = rawData;
+      } else {
+        finalUint8Array = new Uint8Array(rawData as unknown as ArrayBuffer);
+      }
+
+      // Slice out of SharedArrayBuffer into a clean standard buffer
+      const safeBuffer = finalUint8Array.buffer.slice(
+        finalUint8Array.byteOffset,
+        finalUint8Array.byteOffset + finalUint8Array.byteLength
+      );
+
+      const blob = new Blob([safeBuffer as ArrayBuffer], { type: "video/mp4" });
+      // ----------------------------------------------------------------
+
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      const url = URL.createObjectURL(blob);
+      setVideoUrl(url);
+      
       setStatus("Generation Complete!");
     } catch (e) {
       console.error(e);
