@@ -23,15 +23,24 @@ export default function Home() {
   const [previews, setPreviews] = useState<PreviewFile[]>([]);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
+  const actualDurationRef = useRef<number>(0);
 
   useEffect(() => {
     const loadFFmpeg = async () => {
       const ffmpeg = new FFmpeg();
       ffmpegRef.current = ffmpeg;
       
-      // Applied the progress clamping fix here
-      ffmpeg.on("progress", ({ progress }) => {
-        let percentage = Math.round(progress * 100);
+      ffmpeg.on("progress", ({ progress, time }) => {
+        let percentage = 0;
+        
+        // Calculate smooth progress using timestamps if available, otherwise fallback to ratio
+        if (actualDurationRef.current > 0 && time) {
+          const currentSec = time / 1000000;
+          percentage = Math.round((currentSec / actualDurationRef.current) * 100);
+        } else {
+          percentage = Math.round(progress * 100);
+        }
+
         if (percentage < 0) percentage = 0;
         if (percentage > 100) percentage = 100;
         if (Number.isNaN(percentage)) percentage = 0;
@@ -80,9 +89,9 @@ export default function Home() {
     setProgress(0);
     setVideoUrl(null);
     setStatus("Clearing previous data...");
+    actualDurationRef.current = actualOutputSec;
 
     try {
-      // 1. Clean up ALL previous files cleanly
       try {
         const files = await ffmpeg.listDir("/");
         for (const f of files) {
@@ -92,54 +101,59 @@ export default function Home() {
         // ignore on first run
       }
 
-      // 2. Write each source image safely
       setStatus("Writing images...");
       for (let i = 0; i < selectedFiles.length; i++) {
         const u8 = await fetchFile(selectedFiles[i]);
-        // Directly pass the Uint8Array container to ensure valid asset conversion
         await ffmpeg.writeFile(`img${i}.jpg`, new Uint8Array(u8));
       }
 
-      // 3. Build a robust concat list
-      let concatList = "";
-      for (let loop = 0; loop < loops; loop++) {
-        for (let img = 0; img < selectedFiles.length; img++) {
-          concatList += `file 'img${img}.jpg'\n`;
-          concatList += `duration ${durSec}\n`;
-        }
-      }
-      
-      // Repeating the final item explicitly satisfies FFmpeg's read requirements
-      concatList += `file 'img${selectedFiles.length - 1}.jpg'\n`;
-      await ffmpeg.writeFile("concat.txt", concatList);
-
-      // 4. Crop dimensions
       let targetW = 1920, targetH = 1080;
       if (aspectRatio === "9:16")     { targetW = 1080; targetH = 1920; }
       else if (aspectRatio === "1:1") { targetW = 1080; targetH = 1080; }
       else if (aspectRatio === "4:3") { targetW = 1440; targetH = 1080; }
       else if (aspectRatio === "3:4") { targetW = 1080; targetH = 1440; }
 
-      const scaleFilter = `scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih)`;
-      const cropFilter  = `crop=${targetW}:${targetH}`;
-
       setStatus("Compiling video...");
 
-      await ffmpeg.exec([
-        "-f", "concat",
-        "-safe", "0",
-        "-i", "concat.txt",
-        "-vf", `${scaleFilter},${cropFilter},format=yuv420p`,
+      // Dynamic argument engine using robust filter graphs instead of concat.txt
+      const execArgs: string[] = [];
+      
+      // 1. Append unique inputs with forced loop run-times
+      for (let i = 0; i < selectedFiles.length; i++) {
+        execArgs.push("-loop", "1", "-t", String(durSec), "-i", `img${i}.jpg`);
+      }
+
+      // 2. Build multi-stream scaling and cropping filter mappings
+      let filterComplex = "";
+      for (let i = 0; i < selectedFiles.length; i++) {
+        filterComplex += `[${i}:v]scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih),crop=${targetW}:${targetH},setpts=PTS-STARTPTS[v${i}];`;
+      }
+
+      // 3. Chain segments mapping out requested cycles
+      let concatPads = "";
+      for (let loop = 0; loop < loops; loop++) {
+        for (let i = 0; i < selectedFiles.length; i++) {
+          concatPads += `[v${i}]`;
+        }
+      }
+
+      const totalSegments = selectedFiles.length * loops;
+      filterComplex += `${concatPads}concat=n=${totalSegments}:v=1:a=0[outv]`;
+
+      execArgs.push(
+        "-filter_complex", filterComplex,
+        "-map", "[outv]",
         "-c:v", "libx264",
         "-r", String(OUTPUT_FPS),
         "-preset", "ultrafast",
         "-movflags", "+faststart",
-        "output.mp4",
-      ]);
+        "output.mp4"
+      );
+
+      await ffmpeg.exec(execArgs);
 
       setStatus("Reading generated video...");
       
-      // --- APPLIED TYPE-SAFE FIX FOR Uint8Array AND SharedArrayBuffer ---
       const rawData = await ffmpeg.readFile("output.mp4");
       
       let finalUint8Array: Uint8Array;
@@ -151,15 +165,12 @@ export default function Home() {
         finalUint8Array = new Uint8Array(rawData as unknown as ArrayBuffer);
       }
 
-      // Slice out of SharedArrayBuffer into a clean standard buffer
       const safeBuffer = finalUint8Array.buffer.slice(
         finalUint8Array.byteOffset,
         finalUint8Array.byteOffset + finalUint8Array.byteLength
       );
 
-      // Applied the ArrayBuffer type cast here
       const blob = new Blob([safeBuffer as ArrayBuffer], { type: "video/mp4" });
-      // ----------------------------------------------------------------
 
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       const url = URL.createObjectURL(blob);
