@@ -33,7 +33,6 @@ export default function Home() {
       ffmpeg.on("progress", ({ progress, time }) => {
         let percentage = 0;
         
-        // Calculate smooth progress using timestamps if available, otherwise fallback to ratio
         if (actualDurationRef.current > 0 && time) {
           const currentSec = time / 1000000;
           percentage = Math.round((currentSec / actualDurationRef.current) * 100);
@@ -89,7 +88,9 @@ export default function Home() {
     setProgress(0);
     setVideoUrl(null);
     setStatus("Clearing previous data...");
-    actualDurationRef.current = actualOutputSec;
+    
+    // Track progress ONLY against the first heavy pass (1 cycle)
+    actualDurationRef.current = oneCycleSec; 
 
     try {
       try {
@@ -113,44 +114,57 @@ export default function Home() {
       else if (aspectRatio === "4:3") { targetW = 1440; targetH = 1080; }
       else if (aspectRatio === "3:4") { targetW = 1080; targetH = 1440; }
 
-      setStatus("Compiling video...");
-
-      // Dynamic argument engine using robust filter graphs instead of concat.txt
-      const execArgs: string[] = [];
+      // --- PASS 1: Build the Perfect Base Cycle ---
+      setStatus("Compiling base cycle...");
       
-      // 1. Append unique inputs with forced loop run-times
+      const execArgs: string[] = [];
+      let filterComplex = "";
+      let concatPads = "";
+
       for (let i = 0; i < selectedFiles.length; i++) {
         execArgs.push("-loop", "1", "-t", String(durSec), "-i", `img${i}.jpg`);
-      }
-
-      // 2. Build multi-stream scaling and cropping filter mappings
-      let filterComplex = "";
-      for (let i = 0; i < selectedFiles.length; i++) {
         filterComplex += `[${i}:v]scale=iw*max(${targetW}/iw\\,${targetH}/ih):ih*max(${targetW}/iw\\,${targetH}/ih),crop=${targetW}:${targetH},setpts=PTS-STARTPTS[v${i}];`;
+        concatPads += `[v${i}]`;
       }
 
-      // 3. Chain segments mapping out requested cycles
-      let concatPads = "";
-      for (let loop = 0; loop < loops; loop++) {
-        for (let i = 0; i < selectedFiles.length; i++) {
-          concatPads += `[v${i}]`;
-        }
-      }
+      filterComplex += `${concatPads}concat=n=${selectedFiles.length}:v=1:a=0[outv]`;
 
-      const totalSegments = selectedFiles.length * loops;
-      filterComplex += `${concatPads}concat=n=${totalSegments}:v=1:a=0[outv]`;
-
-      execArgs.push(
+      await ffmpeg.exec([
+        ...execArgs,
         "-filter_complex", filterComplex,
         "-map", "[outv]",
         "-c:v", "libx264",
         "-r", String(OUTPUT_FPS),
         "-preset", "ultrafast",
-        "-movflags", "+faststart",
-        "output.mp4"
-      );
+        "cycle.mp4"
+      ]);
 
-      await ffmpeg.exec(execArgs);
+      // --- PASS 2: Multiply the Loops (Stream Copy) ---
+      setStatus("Generating loops...");
+      
+      if (loops > 1) {
+        let concatTxt = "";
+        for (let i = 0; i < loops; i++) {
+          concatTxt += `file 'cycle.mp4'\n`;
+        }
+        await ffmpeg.writeFile("loop_concat.txt", concatTxt);
+
+        await ffmpeg.exec([
+          "-f", "concat",
+          "-safe", "0",
+          "-i", "loop_concat.txt",
+          "-c", "copy", // Instant copy, no re-encoding required
+          "-movflags", "+faststart",
+          "output.mp4"
+        ]);
+      } else {
+        await ffmpeg.exec([
+          "-i", "cycle.mp4",
+          "-c", "copy",
+          "-movflags", "+faststart",
+          "output.mp4"
+        ]);
+      }
 
       setStatus("Reading generated video...");
       
@@ -379,7 +393,7 @@ export default function Home() {
                   : "bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/10 font-extrabold"
               }`}
             >
-              {compiling ? `Compiling (${progress}%)` : "Generate Video Loop"}
+              {compiling ? `Compiling (${progress}%)` : "Generate Video"}
             </button>
           </div>
 
