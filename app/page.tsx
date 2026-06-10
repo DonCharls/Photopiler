@@ -28,9 +28,16 @@ export default function Home() {
     const loadFFmpeg = async () => {
       const ffmpeg = new FFmpeg();
       ffmpegRef.current = ffmpeg;
+      
+      // Applied the progress clamping fix here
       ffmpeg.on("progress", ({ progress }) => {
-        setProgress(Math.round(progress * 100));
+        let percentage = Math.round(progress * 100);
+        if (percentage < 0) percentage = 0;
+        if (percentage > 100) percentage = 100;
+        if (Number.isNaN(percentage)) percentage = 0;
+        setProgress(percentage);
       });
+
       try {
         await ffmpeg.load({
           coreURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
@@ -150,6 +157,7 @@ export default function Home() {
         finalUint8Array.byteOffset + finalUint8Array.byteLength
       );
 
+      // Applied the ArrayBuffer type cast here
       const blob = new Blob([safeBuffer as ArrayBuffer], { type: "video/mp4" });
       // ----------------------------------------------------------------
 
